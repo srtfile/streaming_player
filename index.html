@@ -160,7 +160,6 @@
   .srv-vz{background:rgba(192,132,252,.15);color:var(--vidzee);}
   .srv-anime{background:rgba(255,107,157,.15);color:var(--anime);}
   .srv-vnapahe{background:rgba(244,114,182,.18);color:var(--vnapahe);}
-  .srv-mal{background:rgba(74,222,128,.15);color:var(--ok);}
 
   .stream-item{display:flex;align-items:center;gap:5px;padding:6px 7px;border-radius:7px;
     cursor:pointer;border:1px solid transparent;transition:all .12s;}
@@ -178,7 +177,13 @@
   .tag-vidzee{background:#1a0a2a;color:var(--vidzee);}
   .tag-anime{background:rgba(255,107,157,.15);color:var(--anime);}
   .tag-vnapahe{background:rgba(244,114,182,.18);color:var(--vnapahe);}
-  .tag-mal{background:rgba(74,222,128,.15);color:var(--ok);}
+  .stream-url-text{font-size:.63rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0;}
+  .stream-item.active .stream-url-text{color:var(--accent2);}
+  .play-icon{flex-shrink:0;color:var(--accent);font-size:.72rem;opacity:0;}
+  .stream-item:hover .play-icon,.stream-item.active .play-icon{opacity:1;}
+  .copy-icon{flex-shrink:0;font-size:.65rem;color:var(--muted);opacity:0;cursor:pointer;padding:2px 4px;border-radius:3px;}
+  .stream-item:hover .copy-icon{opacity:1;}
+  .copy-icon:hover{color:var(--ok);}
 
   .ep-nav{background:var(--surface);border:1px solid var(--border);border-radius:10px;
     padding:9px 10px;display:flex;flex-direction:column;gap:7px;}
@@ -374,26 +379,6 @@
       </div>
     </div>
 
-    <!-- MAL Direct search (mal_id + episode lookup against the anime index) -->
-    <div class="adv-toggle" id="malToggle" onclick="toggleMal()" style="padding:8px 13px 0;">
-      <span class="arr">&#9654;</span> &#127909; MAL Direct search (name / MAL ID + episode)
-    </div>
-    <div class="adv-section" id="malSection" style="margin:6px 13px 0;">
-      <div class="fetch-bar" style="min-width:0;">
-        <input id="mal-query" type="text" placeholder="Search anime name&hellip;" />
-        <button id="mal-search-btn" onclick="malSearch()">&#128269; Search</button>
-      </div>
-      <div id="mal-search-results" style="display:flex;flex-direction:column;gap:3px;max-height:140px;overflow-y:auto;"></div>
-      <div class="ep-abs-row">
-        <input id="mal-id" type="number" placeholder="MAL ID (e.g. 21)" min="1"/>
-        <input id="mal-ep" type="number" placeholder="Episode" min="1" value="1" style="max-width:90px;"/>
-        <button id="mal-fetch-btn" onclick="malFetchStreams()">&#9889; Get Streams</button>
-      </div>
-      <div class="ep-detect-result" id="mal-result"></div>
-      <div class="ep-detect-err"   id="mal-err"></div>
-      <div class="adv-note">Looks up the title by MAL ID in the shared anime index, then pulls sub/dub/hsub server links (including direct .m3u8) for that episode. Uses the Render backend if configured, otherwise fetches GitHub directly from the browser.</div>
-    </div>
-
     <!-- Source status chips -->
     <div class="src-chips">
       <div class="src-chip" id="chip-vn"><span class="chip-dot"></span>VidNest</div>
@@ -402,7 +387,6 @@
       <div class="src-chip" id="chip-vz"><span class="chip-dot"></span>Vidzee</div>
       <div class="src-chip" id="chip-vnapahe"><span class="chip-dot"></span>&#127800; VNAnimePahe</div>
       <div class="src-chip" id="chip-anime"><span class="chip-dot"></span>&#127820; Anime</div>
-      <div class="src-chip" id="chip-mal"><span class="chip-dot"></span>&#127909; MAL Direct</div>
     </div>
 
     <!-- Filter tabs -->
@@ -414,7 +398,6 @@
       <div class="filter-tab"        data-src="vidzee"         onclick="filterBy(this)">&#128302; Vidzee</div>
       <div class="filter-tab"        data-src="vidnestanimepahe" onclick="filterBy(this)">&#127800; VNAnimePahe</div>
       <div class="filter-tab"        data-src="anime"          onclick="filterBy(this)">&#127820; Anime</div>
-      <div class="filter-tab"        data-src="malstream"      onclick="filterBy(this)">&#127909; MAL Direct</div>
     </div>
 
     <div class="stream-list" id="streamList"></div>
@@ -447,208 +430,6 @@ const VNA_PROXIES = [
   { name:'corsproxy',fn: function(u){ return 'https://corsproxy.io/?url=' + encodeURIComponent(u); } },
   { name:'allorigins',fn:function(u){ return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u); } },
 ];
-
-// ── MAL Direct search (ports anime_stream_finder.py to the browser) ──
-// Set BACKEND_BASE to your deployed Render URL (see server/app.py) for a fast,
-// cached lookup. Leave it empty ('') to fall back to fetching the GitHub index
-// directly from the browser (raw.githubusercontent.com sends CORS headers, so
-// this works without a proxy, it's just slower on first load).
-const MAL_BACKEND_BASE = 'https://streaming-player.onrender.com';
-const MAL_INDEX_URL    = 'https://raw.githubusercontent.com/srtfile/alist/refs/heads/main/index.json';
-
-let malIndexPromise = null; // cached parsed index (mal_id -> entry)
-const malAnimeDataCache = {}; // raw_url -> parsed anime data (episodes list)
-
-async function malFetchIndex() {
-  if (malIndexPromise) return malIndexPromise;
-  malIndexPromise = (async function() {
-    var r = await fetch(MAL_INDEX_URL, { signal: AbortSignal.timeout(15000) });
-    if (!r.ok) throw new Error('Index HTTP ' + r.status);
-    var raw = await r.json();
-    var byId = {};
-    raw.forEach(function(entry) { if (entry && entry.mal_id !== undefined) byId[entry.mal_id] = entry; });
-    return { list: raw, byId: byId };
-  })();
-  return malIndexPromise;
-}
-
-async function malFetchAnimeData(rawUrl) {
-  if (malAnimeDataCache[rawUrl]) return malAnimeDataCache[rawUrl];
-  var r = await fetch(rawUrl, { signal: AbortSignal.timeout(15000) });
-  if (!r.ok) throw new Error('Episode data HTTP ' + r.status);
-  var data = await r.json();
-  malAnimeDataCache[rawUrl] = data;
-  return data;
-}
-
-// Mirrors extract_streams() in anime_stream_finder.py
-function malExtractStreams(episode, types) {
-  types = types || ['sub', 'dub', 'hsub'];
-  var out = {};
-  types.forEach(function(t) {
-    var data = episode[t];
-    if (!data) return;
-    var servers = {};
-    Object.keys(data).forEach(function(server) {
-      var links = data[server] || {};
-      var clean = {};
-      Object.keys(links).forEach(function(k) { if (links[k]) clean[k] = links[k]; });
-      if (Object.keys(clean).length) servers[server] = clean;
-    });
-    if (Object.keys(servers).length) out[t] = servers;
-  });
-  return out;
-}
-
-function toggleMal() {
-  document.getElementById('malToggle').classList.toggle('open');
-  document.getElementById('malSection').classList.toggle('visible');
-}
-function clearMalMsgs() {
-  var r = document.getElementById('mal-result'); r.className = 'ep-detect-result'; r.textContent = '';
-  var e = document.getElementById('mal-err');     e.className = 'ep-detect-err';    e.textContent = '';
-}
-function malShowErr(msg) {
-  var e = document.getElementById('mal-err');
-  e.textContent = '\u2717 ' + msg;
-  e.className = 'ep-detect-err visible';
-}
-function malShowOk(msg) {
-  var r = document.getElementById('mal-result');
-  r.textContent = '\u2713 ' + msg;
-  r.className = 'ep-detect-result visible';
-}
-
-// Search by title (client-side substring match over the cached index; the
-// backend also exposes /api/search for a server-side version of the same).
-async function malSearch() {
-  clearMalMsgs();
-  var q = document.getElementById('mal-query').value.trim();
-  var resultsEl = document.getElementById('mal-search-results');
-  resultsEl.innerHTML = '';
-  if (!q) { malShowErr('Type an anime name to search'); return; }
-  var btn = document.getElementById('mal-search-btn');
-  btn.disabled = true; btn.textContent = 'Searching\u2026';
-  hdrStatus('searching MAL index\u2026');
-  try {
-    var matches;
-    if (MAL_BACKEND_BASE) {
-      var r = await fetch(MAL_BACKEND_BASE.replace(/\/$/, '') + '/api/search?q=' + encodeURIComponent(q), { signal: AbortSignal.timeout(15000) });
-      if (!r.ok) throw new Error('Backend HTTP ' + r.status);
-      matches = (await r.json()).results || [];
-    } else {
-      var idx = await malFetchIndex();
-      var ql = q.toLowerCase();
-      matches = idx.list.filter(function(e){ return e.anime_name && e.anime_name.toLowerCase().indexOf(ql) !== -1; }).slice(0, 25);
-    }
-    if (!matches.length) { malShowErr('No matches for "' + q + '"'); hdrStatus('no matches'); return; }
-    matches.forEach(function(m) {
-      var row = document.createElement('div');
-      row.className = 'stream-item';
-      row.innerHTML =
-        '<span class="type-tag tag-mal">' + esc(m.mal_id) + '</span>' +
-        '<span class="stream-url-text">' + esc(m.anime_name) + '</span>' +
-        '<span class="play-icon">\u25B6</span>';
-      row.addEventListener('click', function() {
-        document.getElementById('mal-id').value = m.mal_id;
-        document.getElementById('mal-query').value = m.anime_name;
-        malShowOk('Selected: ' + m.anime_name + ' (MAL ' + m.mal_id + ')');
-      });
-      resultsEl.appendChild(row);
-    });
-    hdrStatus(matches.length + ' matches');
-  } catch(e) {
-    malShowErr(e.message || 'Search failed');
-    hdrStatus('search failed');
-  } finally {
-    btn.disabled = false; btn.textContent = '\uD83D\uDD0D Search';
-  }
-}
-
-// Fetch streams for a given MAL ID + episode, pushed under the 'malstream' source.
-async function malFetchStreams() {
-  clearMalMsgs();
-  var malId = parseInt(document.getElementById('mal-id').value, 10);
-  var ep    = parseInt(document.getElementById('mal-ep').value, 10) || 1;
-  if (!malId) { malShowErr('Enter a MAL ID (or pick one from search results)'); return; }
-  var btn = document.getElementById('mal-fetch-btn');
-  btn.disabled = true; btn.textContent = 'Fetching\u2026';
-  setChip('mal', 'pending');
-  hdrStatus('fetching MAL ' + malId + ' ep ' + ep + '\u2026');
-  try {
-    var added = 0, animeName = '', epTitle = '';
-    if (MAL_BACKEND_BASE) {
-      var r = await fetch(
-        MAL_BACKEND_BASE.replace(/\/$/, '') + '/api/stream?mal_id=' + malId + '&episode=' + ep,
-        { signal: AbortSignal.timeout(20000) }
-      );
-      var payload = await r.json();
-      if (!r.ok) throw new Error(payload.error || ('Backend HTTP ' + r.status));
-      animeName = payload.anime_name || '';
-      epTitle   = payload.episode_title || '';
-      added = malPushFromStreamsObj(payload.streams || {}, malId, animeName);
-    } else {
-      var idx = await malFetchIndex();
-      var entry = idx.byId[malId];
-      if (!entry) throw new Error('No anime found with MAL ID ' + malId);
-      if (!entry.raw_url) throw new Error('Entry has no raw_url');
-      animeName = entry.anime_name || '';
-      var animeData = await malFetchAnimeData(entry.raw_url);
-      var episodes = animeData.episodes || [];
-      var episode = episodes[ep - 1];
-      if (!episode) throw new Error('Episode ' + ep + ' out of range (1\u2013' + episodes.length + ')');
-      epTitle = episode.episode_title || ('Episode ' + ep);
-      var streams = malExtractStreams(episode);
-      added = malPushFromStreamsObj(streams, malId, animeName);
-    }
-    if (added > 0) {
-      setChip('mal', 'done');
-      malShowOk((animeName ? animeName + ' \u2014 ' : '') + 'Ep ' + ep + (epTitle ? ' (' + epTitle + ')' : '') + ': ' + added + ' stream(s) added');
-      hdrStatus(added + ' MAL streams added');
-      filterBy(document.querySelector('.filter-tab[data-src="malstream"]'));
-    } else {
-      setChip('mal', 'err');
-      malShowErr('No stream links found for that episode');
-      hdrStatus('no MAL streams');
-    }
-  } catch(e) {
-    setChip('mal', 'err');
-    malShowErr(e.message || 'Fetch failed');
-    hdrStatus('MAL fetch failed');
-  } finally {
-    btn.disabled = false; btn.textContent = '\u26A1 Get Streams';
-  }
-}
-
-// Pushes streams from a {sub:{server:{key:url}}, dub:{...}, hsub:{...}} object
-// (same shape as extract_streams() output / the backend's `streams` field).
-function malPushFromStreamsObj(streamsObj, malId, animeName) {
-  var added = 0;
-  Object.keys(streamsObj).forEach(function(stype) {
-    var servers = streamsObj[stype];
-    Object.keys(servers).forEach(function(server) {
-      var links = servers[server];
-      Object.keys(links).forEach(function(key) {
-        var url = links[key];
-        if (!url) return;
-        var isM3u8 = key.toLowerCase().endsWith('_m3u8') || detectType(url) === 'hls';
-        var t = isM3u8 ? 'hls' : (detectType(url) === 'hls' ? 'embed' : detectType(url));
-        pushStream({
-          source: 'malstream',
-          server: server + ' \u00B7 ' + stype.toUpperCase(),
-          pill:   'mal',
-          label:  isM3u8 ? 'M3U8' : (key === 'iframe' ? 'Embed' : key),
-          url:    url,
-          type:   t,
-        });
-        added++;
-      });
-    });
-  });
-  return added;
-}
-document.getElementById('mal-query').addEventListener('keydown', function(e){ if (e.key === 'Enter') malSearch(); });
-document.getElementById('mal-ep').addEventListener('keydown', function(e){ if (e.key === 'Enter') malFetchStreams(); });
 
 let hlsPlayer        = null;
 let activeItem       = null;
@@ -1628,12 +1409,10 @@ async function fetchVidzee(tmdb, mtype, season, episode) {
 const SRC_BADGE = {
   vidnest:'srv-vn', vaplayer:'srv-va', vidrock:'srv-vr',
   vidzee:'srv-vz', vidnestanimepahe:'srv-vnapahe', anime:'srv-anime',
-  malstream:'srv-mal',
 };
 const SRC_NAME = {
   vidnest:'VidNest', vaplayer:'VAPlayer', vidrock:'VidRock',
   vidzee:'Vidzee', vidnestanimepahe:'VNAnimePahe', anime:'Anime',
-  malstream:'MAL Direct',
 };
 
 function pushStream(s) {
@@ -1677,7 +1456,7 @@ function clearAll() {
   allStreams = [];
   document.getElementById('streamList').innerHTML = '';
   document.getElementById('totalBadge').textContent = '0';
-  ['vn','va','vr','vz','vnapahe','anime','mal'].forEach(function(k){ setChip(k, ''); });
+  ['vn','va','vr','vz','vnapahe','anime'].forEach(function(k){ setChip(k, ''); });
   hideVnapaheInfo();
 }
 function filterBy(tabEl) {
