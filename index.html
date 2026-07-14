@@ -453,7 +453,7 @@ const VNA_PROXIES = [
 // cached lookup. Leave it empty ('') to fall back to fetching the GitHub index
 // directly from the browser (raw.githubusercontent.com sends CORS headers, so
 // this works without a proxy, it's just slower on first load).
-const MAL_BACKEND_BASE = 'https://streaming-player.onrender.com/'; // e.g. 'https://your-app.onrender.com'
+const MAL_BACKEND_BASE = 'https://streaming-player.onrender.com';
 const MAL_INDEX_URL    = 'https://raw.githubusercontent.com/srtfile/alist/refs/heads/main/index.json';
 
 let malIndexPromise = null; // cached parsed index (mal_id -> entry)
