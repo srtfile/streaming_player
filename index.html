@@ -22,7 +22,7 @@
     background-size:40px 40px;pointer-events:none;z-index:0;}
 
   header{position:relative;z-index:1;padding:13px 20px;border-bottom:1px solid var(--border);
-    display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap;row-gap:4px;}
   .logo-dot{width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,#6c63ff,#a78bfa);
     display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0;}
   header h1{font-size:.95rem;font-weight:700;letter-spacing:.3px;color:var(--accent2);}
@@ -37,8 +37,8 @@
 
   .player-side{display:flex;flex-direction:column;padding:14px;gap:10px;overflow-y:auto;}
 
-  .url-bar{display:flex;gap:6px;}
-  .url-bar input{flex:1;background:var(--surface);border:1px solid var(--border);color:var(--text);
+  .url-bar{display:flex;gap:6px;flex-wrap:wrap;}
+  .url-bar input{flex:1;min-width:160px;background:var(--surface);border:1px solid var(--border);color:var(--text);
     padding:9px 12px;border-radius:8px;font-size:.8rem;font-family:var(--mono);outline:none;}
   .url-bar input:focus{border-color:var(--accent);}
   .url-bar select{background:var(--surface);border:1px solid var(--border);color:var(--text);
@@ -163,9 +163,13 @@
   .srv-mal{background:rgba(74,222,128,.15);color:var(--ok);}
 
   .stream-item{display:flex;align-items:center;gap:5px;padding:6px 7px;border-radius:7px;
-    cursor:pointer;border:1px solid transparent;transition:all .12s;}
+    cursor:pointer;border:1px solid transparent;transition:all .12s;min-width:0;}
   .stream-item:hover{background:var(--surface);border-color:var(--border);}
   .stream-item.active{background:#1a1535;border-color:var(--accent);}
+  .stream-url-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;font-size:.7rem;font-family:var(--mono);color:var(--muted);}
+  .copy-icon,.play-icon{flex-shrink:0;font-size:.72rem;color:var(--muted);padding:2px;}
+  .copy-icon:hover{color:var(--accent2);}
   .type-tag{font-size:.58rem;font-weight:700;border-radius:4px;padding:2px 5px;white-space:nowrap;flex-shrink:0;}
   .tag-hls{background:#2a1f0a;color:var(--warn);}
   .tag-mp4{background:#0a2a14;color:var(--ok);}
@@ -227,6 +231,42 @@
   ::-webkit-scrollbar{width:4px;}
   ::-webkit-scrollbar-track{background:transparent;}
   ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+
+  /* ── Responsive ─────────────────────────────────────────────────── */
+  @media(max-width:900px){
+    .wrap{grid-template-columns:1fr;grid-template-rows:auto 1fr;height:auto;min-height:calc(100vh - 51px);}
+    .source-panel{border-left:none;border-top:1px solid var(--border);max-height:60vh;}
+  }
+  @media(max-width:640px){
+    header{padding:11px 14px;gap:8px;}
+    header h1{font-size:.85rem;}
+    #hdr-status{font-size:.65rem;}
+    .player-side{padding:10px;gap:8px;}
+    .panel-head{padding:9px 10px;}
+    .fetch-bar{min-width:100%;}
+    .fetch-bar input{min-width:0;}
+    .src-chips{padding:6px 10px;gap:4px;}
+    .src-chip{font-size:.58rem;padding:3px 7px;}
+    .filter-tabs{-webkit-overflow-scrolling:touch;}
+    .filter-tab{padding:8px 9px;font-size:.62rem;}
+    .ep-strip{padding:6px 10px;}
+    .adv-section{margin:6px 10px 0 !important;}
+    #malSection{margin:6px 10px 0;}
+    .player-title{font-size:.78rem;}
+    .status-bar{font-size:.65rem;}
+    /* comfortable tap targets on touch screens */
+    .url-bar button, .fetch-bar button, .ep-abs-row button, .ep-nav-btn,
+    .ep-chip, .filter-tab, .stream-item{min-height:38px;}
+    .url-bar select, .fetch-bar select{min-height:38px;}
+  }
+  @media(max-width:420px){
+    .url-bar{flex-direction:column;}
+    .url-bar input, .url-bar select, .url-bar button{width:100%;}
+    .ep-manual-row{flex-direction:column;}
+    .ep-abs-row{flex-wrap:wrap;}
+    .ep-abs-row input{min-width:100%;}
+    .ep-abs-row button{flex:1;}
+  }
 </style>
 </head>
 <body>
@@ -1726,20 +1766,95 @@ function getHeaders() {
     origin:  document.getElementById('adv-origin').value.trim(),
   };
 }
+// Browsers refuse to let JS set the Referer/Origin request headers (they're
+// "forbidden headers" on fetch/XHR) — xhr.setRequestHeader('Referer', ...)
+// is silently ignored no matter what. The only real fix is to do the fetch
+// server-side, where those are just ordinary headers, via the /api/proxy
+// route in server/app.py. This builds that proxied URL.
+function needsProxy(headers) {
+  return !!(headers && (headers.referer || headers.origin));
+}
+function buildProxyUrl(url, headers) {
+  if (!MAL_BACKEND_BASE || !needsProxy(headers)) return url;
+  var p = MAL_BACKEND_BASE + '/api/proxy?url=' + encodeURIComponent(url);
+  if (headers.referer) p += '&referer=' + encodeURIComponent(headers.referer);
+  if (headers.origin)  p += '&origin='  + encodeURIComponent(headers.origin);
+  return p;
+}
+// Lightweight content sniff (HEAD, falling back to a small ranged GET) so a
+// stream's real category (hls / mp4 / dash / embed) is confirmed from what
+// the server actually returns instead of just guessing off the URL text.
+async function sniffStreamType(url, headers) {
+  if (!MAL_BACKEND_BASE) return null; // no proxy configured, can't safely probe cross-origin
+  var probeUrl = buildProxyUrl(url, headers) === url
+    ? MAL_BACKEND_BASE + '/api/proxy?url=' + encodeURIComponent(url)
+    : buildProxyUrl(url, headers);
+  function classify(ct, text) {
+    ct = (ct || '').toLowerCase();
+    if (ct.includes('mpegurl') || ct.includes('vnd.apple.mpegurl')) return 'hls';
+    if (ct.includes('dash+xml')) return 'dash';
+    if (ct.includes('video/mp4') || ct.includes('video/webm') || ct.includes('video/x-matroska')) return 'mp4';
+    if (ct.includes('text/html')) return 'embed';
+    if (text) {
+      var head = text.slice(0, 512);
+      if (head.indexOf('#EXTM3U') !== -1) return 'hls';
+      if (head.indexOf('<MPD') !== -1) return 'dash';
+      if (/^\s*<(!doctype html|html)/i.test(head)) return 'embed';
+    }
+    return null;
+  }
+  try {
+    var head = await fetch(probeUrl, { method: 'HEAD', signal: AbortSignal.timeout(6000) });
+    var t = classify(head.headers.get('content-type'), null);
+    if (t) return t;
+  } catch (e) {}
+  try {
+    var r = await fetch(probeUrl, { headers: { Range: 'bytes=0-1023' }, signal: AbortSignal.timeout(6000) });
+    var text = await r.text().catch(function(){ return ''; });
+    return classify(r.headers.get('content-type'), text);
+  } catch (e) {}
+  return null;
+}
 function playStream(url, type, itemEl, streamObj) {
   if (activeItem) activeItem.classList.remove('active');
   activeItem = itemEl;
   itemEl.classList.add('active');
   document.getElementById('manualUrl').value = url;
   if (streamObj && currentMediaType === 'tv') rememberPreferredStream(streamObj);
-  loadMedia(url, type);
+  resolveAndPlay(url, type, itemEl);
 }
 function playManual() {
   var url = document.getElementById('manualUrl').value.trim();
   if (!url) return;
-  var type = document.getElementById('manualType').value;
-  if (type === 'auto') type = detectType(url);
+  var forced = document.getElementById('manualType').value;
+  var type = forced === 'auto' ? detectType(url) : forced;
   if (activeItem) { activeItem.classList.remove('active'); activeItem = null; }
+  // A user-forced type (dropdown set to something other than Auto) is
+  // trusted as-is; only the "Auto" guess gets double-checked live.
+  if (forced === 'auto') resolveAndPlay(url, type, null);
+  else loadMedia(url, type);
+}
+// Selecting any stream should immediately figure out what it actually is
+// and start playing it \u2014 no extra clicks. `hintType` is the fast
+// extension/hostname guess from detectType(); for anything not already
+// unambiguous (embed pages, .txt playlists) it's confirmed against a live
+// server-side content sniff so a wrong static guess never silently breaks
+// playback. The stream stays responsive throughout: overlay + status
+// update immediately, corrected type badge, then autoplay.
+async function resolveAndPlay(url, hintType, itemEl) {
+  showOverlay(true, 'Detecting stream type\u2026');
+  setStatus('warn', 'Detecting stream type\u2026', url);
+  var type = hintType;
+  if (hintType !== 'embed' && hintType !== 'txt') {
+    try {
+      var sniffed = await sniffStreamType(url, getHeaders());
+      if (sniffed) type = sniffed;
+    } catch (e) {}
+  }
+  if (itemEl && type !== hintType) {
+    var tag = itemEl.querySelector('.type-tag');
+    if (tag) tag.className = 'type-tag tag-' + type;
+  }
   loadMedia(url, type);
 }
 async function loadMedia(url, type) {
@@ -1763,13 +1878,22 @@ function destroyPlayer() {
 function loadHls(url) {
   var vid = document.getElementById('vid');
   var headers = getHeaders();
-  var referer = headers.referer, origin = headers.origin;
+  var useProxy = needsProxy(headers);
+  if (useProxy && !MAL_BACKEND_BASE) {
+    setStatus('warn', 'Referer/Origin need the backend proxy \u2014 none configured, trying direct', url);
+  }
   if (Hls.isSupported()) {
     var cfg = { enableWorker: true, lowLatencyMode: false };
-    cfg.xhrSetup = function(xhr) {
-      if (referer) { try { xhr.setRequestHeader('Referer', referer); } catch(e){} }
-      if (origin)  { try { xhr.setRequestHeader('Origin',  origin);  } catch(e){} }
-    };
+    // Referer/Origin are "forbidden headers" \u2014 the browser silently drops
+    // any attempt to set them via xhr.setRequestHeader. hls.js calls
+    // xhrSetup(xhr, requestUrl) right after xhr.open(requestUrl) but before
+    // send(), so re-opening the request against our proxy (which sets the
+    // real headers server-side) is the only way this actually works.
+    if (useProxy && MAL_BACKEND_BASE) {
+      cfg.xhrSetup = function(xhr, requestUrl) {
+        xhr.open('GET', buildProxyUrl(requestUrl, headers), true);
+      };
+    }
     hlsPlayer = new Hls(cfg);
     hlsPlayer.loadSource(url);
     hlsPlayer.attachMedia(vid);
@@ -1783,39 +1907,30 @@ function loadHls(url) {
       if (data.fatal) { showOverlay(false); setStatus('err', 'HLS error: ' + data.details, url); }
     });
   } else if (vid.canPlayType('application/vnd.apple.mpegurl')) {
-    vid.src = url; vid.play().catch(function(){});
+    vid.src = useProxy ? buildProxyUrl(url, headers) : url;
+    vid.play().catch(function(){});
     vid.oncanplay = function(){ showOverlay(false); setStatus('ok', 'Playing HLS (native)', url); setTypeBadge('hls'); };
     vid.onerror   = function(){ showOverlay(false); setStatus('err', 'Playback error', url); };
   } else {
     showOverlay(false); setStatus('err', 'HLS not supported', url);
   }
 }
+// MP4/WebM: point <video> straight at the (possibly proxied) URL. The proxy
+// forwards Range requests both ways so seeking still works, which a
+// fetch+blob approach can't do for large files.
 function loadNative(url, type) {
   var vid = document.getElementById('vid');
   var headers = getHeaders();
-  var referer = headers.referer, origin = headers.origin;
-  if (referer || origin) {
-    var hdrs = {};
-    if (referer) hdrs['Referer'] = referer;
-    if (origin)  hdrs['Origin']  = origin;
-    fetch(url, { headers: hdrs })
-      .then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
-      .then(function(blob){
-        var burl = URL.createObjectURL(blob);
-        vid.src = burl; vid.play().catch(function(){});
-        vid.oncanplay = function(){ showOverlay(false); setStatus('ok', 'Playing ' + type.toUpperCase(), url); setTypeBadge(type); };
-        vid.onerror   = function(){ showOverlay(false); setStatus('err', 'Playback error', url); };
-      })
-      .catch(function(e){ showOverlay(false); setStatus('err', 'Fetch error: ' + e.message, url); });
-  } else {
-    vid.src = url; vid.play().catch(function(){});
-    vid.oncanplay = function(){ showOverlay(false); setStatus('ok', 'Playing ' + type.toUpperCase(), url); setTypeBadge(type); };
-    vid.onerror   = function(){ showOverlay(false); setStatus('err', 'Playback error', url); };
-  }
+  vid.src = needsProxy(headers) ? buildProxyUrl(url, headers) : url;
+  vid.play().catch(function(){});
+  vid.oncanplay = function(){ showOverlay(false); setStatus('ok', 'Playing ' + type.toUpperCase(), url); setTypeBadge(type); };
+  vid.onerror   = function(){ showOverlay(false); setStatus('err', 'Playback error', url); };
 }
 function loadDash(url) {
   var vid = document.getElementById('vid');
-  vid.src = url; vid.play().catch(function(){});
+  var headers = getHeaders();
+  vid.src = needsProxy(headers) ? buildProxyUrl(url, headers) : url;
+  vid.play().catch(function(){});
   vid.oncanplay = function(){ showOverlay(false); setStatus('ok', 'Playing DASH', url); setTypeBadge('dash'); };
   vid.onerror   = function(){ showOverlay(false); setStatus('err', 'DASH error', url); };
 }
