@@ -32,13 +32,18 @@ Deploy on Render (from GitHub):
 
 import time
 import asyncio
+from pathlib import Path
 from typing import Any, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 INDEX_URL = "https://raw.githubusercontent.com/srtfile/alist/refs/heads/main/index.json"
+
+# The player page lives right next to this file and is served at "/".
+FRONTEND_FILE = Path(__file__).parent / "index.html"
 
 INDEX_TTL_SECONDS = 30 * 60   # index.json rarely changes -> cache 30 min
 ANIME_TTL_SECONDS = 5 * 60    # per-title episode data -> cache 5 min
@@ -153,6 +158,18 @@ def collect_m3u8(streams: dict) -> list[str]:
 
 
 # ── Routes ──────────────────────────────────────────────────────────────
+@app.get("/")
+async def serve_index():
+    if not FRONTEND_FILE.exists():
+        raise HTTPException(status_code=404, detail="index.html not found next to app.py")
+    return FileResponse(FRONTEND_FILE, media_type="text/html")
+
+
+@app.get("/index.html")
+async def serve_index_alias():
+    return await serve_index()
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "index_cached": _index_cache["data"] is not None}
