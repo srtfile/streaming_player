@@ -8,7 +8,6 @@ MB) on every request.
 
 Endpoints
 ---------
-GET  /health
 GET  /api/search?q=<name>&limit=25
     -> {"results": [{"mal_id": 21, "anime_name": "One Piece", "anime_url": "..."}]}
 
@@ -19,6 +18,17 @@ GET  /api/stream?mal_id=<id>&episode=<n>
          "streams": {"sub": {"server": {"key": "url", ...}}, "dub": {...}},
          "m3u8": ["https://...", ...]
        }
+
+GET  /api/proxy?url=<url>&referer=<referer>&origin=<origin>
+    Server-side passthrough used by the player for streams that require a
+    specific Referer/Origin. Browsers block JS from setting those headers
+    directly (they're on the fetch "forbidden header" list), so the page
+    asks this endpoint to fetch the URL instead, where Referer/Origin are
+    just ordinary headers. The upstream response (manifest, segment, or
+    video file) is streamed straight back with permissive CORS and Range
+    support so hls.js / <video> can consume it exactly like a direct URL.
+    Supports GET and HEAD (HEAD is used by the frontend to sniff
+    Content-Type when auto-detecting a stream's category).
 
 Run locally:
     pip install -r requirements.txt
@@ -36,9 +46,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 INDEX_URL = "https://raw.githubusercontent.com/srtfile/alist/refs/heads/main/index.json"
 
@@ -54,8 +64,13 @@ app = FastAPI(title="MAL Direct Stream Finder")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "HEAD"],
     allow_headers=["*"],
+)
+
+DEFAULT_PROXY_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
 # Shared async client (connection pooling / keep-alive) for speed.
@@ -170,11 +185,6 @@ async def serve_index_alias():
     return await serve_index()
 
 
-@app.get("/health")
-async def health():
-    return {"status": "ok", "index_cached": _index_cache["data"] is not None}
-
-
 @app.get("/api/search")
 async def search(q: str = Query(..., min_length=1), limit: int = Query(25, ge=1, le=100)):
     idx = await get_index()
@@ -231,3 +241,74 @@ async def stream(mal_id: int = Query(...), episode: int = Query(1, ge=1)):
         "streams": streams,
         "m3u8": collect_m3u8(streams),
     }
+
+
+# ── Referer/Origin passthrough proxy ──────────────────────────────────────
+# Browsers treat Referer/Origin as "forbidden request headers" — JS running
+# in the page can never set them on a fetch/XHR, no matter what the code
+# tries. The only real fix is to do the fetch on the server, where they're
+# ordinary headers, and stream the result back to the browser. hls.js is
+# told (via xhrSetup) to reroute every manifest/segment/key request through
+# this endpoint whenever a Referer or Origin is configured, and <video>
+# points straight at it for MP4/DASH. Range is forwarded both ways so
+# seeking still works.
+PASSTHROUGH_RESPONSE_HEADERS = (
+    "content-type",
+    "content-length",
+    "content-range",
+    "accept-ranges",
+    "cache-control",
+    "last-modified",
+    "etag",
+)
+
+
+@app.api_route("/api/proxy", methods=["GET", "HEAD"])
+async def proxy(
+    request: Request,
+    url: str = Query(..., min_length=1, description="Absolute URL to fetch"),
+    referer: Optional[str] = Query(None),
+    origin: Optional[str] = Query(None),
+):
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="url must be an absolute http(s) URL")
+
+    fwd_headers: dict[str, str] = {
+        "User-Agent": request.headers.get("user-agent") or DEFAULT_PROXY_UA,
+        "Accept": request.headers.get("accept", "*/*"),
+    }
+    if referer:
+        fwd_headers["Referer"] = referer
+    if origin:
+        fwd_headers["Origin"] = origin
+    range_header = request.headers.get("range")
+    if range_header:
+        fwd_headers["Range"] = range_header
+
+    assert _client is not None
+    try:
+        upstream_req = _client.build_request(request.method, url, headers=fwd_headers)
+        upstream = await _client.send(upstream_req, stream=True)
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Upstream fetch failed: {e}")
+
+    resp_headers = {
+        h: upstream.headers[h] for h in PASSTHROUGH_RESPONSE_HEADERS if h in upstream.headers
+    }
+    resp_headers.setdefault("Cache-Control", "no-store")
+    media_type = upstream.headers.get("content-type")
+
+    if request.method == "HEAD":
+        await upstream.aclose()
+        return Response(status_code=upstream.status_code, headers=resp_headers, media_type=media_type)
+
+    async def body_iter():
+        try:
+            async for chunk in upstream.aiter_bytes():
+                yield chunk
+        finally:
+            await upstream.aclose()
+
+    return StreamingResponse(
+        body_iter(), status_code=upstream.status_code, headers=resp_headers, media_type=media_type
+    )
