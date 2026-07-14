@@ -611,6 +611,7 @@ async function malFetchStreams() {
   var malId = parseInt(document.getElementById('mal-id').value, 10);
   var ep    = parseInt(document.getElementById('mal-ep').value, 10) || 1;
   if (!malId) { malShowErr('Enter a MAL ID (or pick one from search results)'); return; }
+  clearSourceStreams('malstream');
   var btn = document.getElementById('mal-fetch-btn');
   btn.disabled = true; btn.textContent = 'Fetching\u2026';
   setChip('mal', 'pending');
@@ -626,7 +627,7 @@ async function malFetchStreams() {
       if (!r.ok) throw new Error(payload.error || ('Backend HTTP ' + r.status));
       animeName = payload.anime_name || '';
       epTitle   = payload.episode_title || '';
-      added = malPushFromStreamsObj(payload.streams || {}, malId, animeName);
+      added = malPushFromStreamsObj(payload.streams || {}, malId, animeName, ep);
     } else {
       var idx = await malFetchIndex();
       var entry = idx.byId[malId];
@@ -639,7 +640,7 @@ async function malFetchStreams() {
       if (!episode) throw new Error('Episode ' + ep + ' out of range (1\u2013' + episodes.length + ')');
       epTitle = episode.episode_title || ('Episode ' + ep);
       var streams = malExtractStreams(episode);
-      added = malPushFromStreamsObj(streams, malId, animeName);
+      added = malPushFromStreamsObj(streams, malId, animeName, ep);
     }
     if (added > 0) {
       setChip('mal', 'done');
@@ -662,7 +663,7 @@ async function malFetchStreams() {
 
 // Pushes streams from a {sub:{server:{key:url}}, dub:{...}, hsub:{...}} object
 // (same shape as extract_streams() output / the backend's `streams` field).
-function malPushFromStreamsObj(streamsObj, malId, animeName) {
+function malPushFromStreamsObj(streamsObj, malId, animeName, ep) {
   var added = 0;
   Object.keys(streamsObj).forEach(function(stype) {
     var servers = streamsObj[stype];
@@ -675,7 +676,7 @@ function malPushFromStreamsObj(streamsObj, malId, animeName) {
         var t = isM3u8 ? 'hls' : (detectType(url) === 'hls' ? 'embed' : detectType(url));
         pushStream({
           source: 'malstream',
-          server: server + ' \u00B7 ' + stype.toUpperCase(),
+          server: 'Ep' + ep + ' \u00B7 ' + server + ' \u00B7 ' + stype.toUpperCase(),
           pill:   'mal',
           label:  isM3u8 ? 'M3U8' : (key === 'iframe' ? 'Embed' : key),
           url:    url,
@@ -1719,6 +1720,25 @@ function clearAll() {
   document.getElementById('totalBadge').textContent = '0';
   ['vn','va','vr','vz','vnapahe','anime','mal'].forEach(function(k){ setChip(k, ''); });
   hideVnapaheInfo();
+}
+// Removes just one source's streams (from state + DOM, whichever server
+// groups they landed in) without touching anything else. Used before a
+// fresh MAL Direct fetch so a new episode's streams don't just pile up
+// under the previous episode's server groups \u2014 same server names every
+// episode means they'd otherwise land in the exact same group and be
+// visually indistinguishable from the old ones, making it look like the
+// fetch for episode 3 (etc.) silently did nothing.
+function clearSourceStreams(source) {
+  allStreams = allStreams.filter(function(s) { return s.source !== source; });
+  document.querySelectorAll('.stream-item[data-source="' + source + '"]').forEach(function(el) {
+    if (activeItem === el) activeItem = null;
+    var group = el.parentElement;
+    el.remove();
+    if (group && group.classList.contains('server-group') && !group.querySelector('.stream-item')) {
+      group.remove();
+    }
+  });
+  document.getElementById('totalBadge').textContent = allStreams.length;
 }
 function filterBy(tabEl) {
   activeFilter = tabEl.dataset.src;
